@@ -90,6 +90,8 @@ pub fn compile_program(
     params: impl IntoIterator<Item = Param>,
     target: CompileTarget,
 ) -> Result<Vec<u8>, CompileError> {
+    session::reset_session();
+
     let params: Vec<Param> = params.into_iter().collect();
 
     let root_expr = ExprParser::new()
@@ -97,7 +99,11 @@ pub fn compile_program(
         .map_err(|e| CompileError(e.to_string()))?;
 
     let ctx = ResolverBuilder::new()
-        .with_vars(params.iter().map(|p| (Symbol::from_str(&p.name), p.ty.into())))
+        .with_vars(
+            params
+                .iter()
+                .map(|p| (Symbol::from_str(&p.name), p.ty.into())),
+        )
         .resolve(&root_expr)?;
 
     let ret_ty = ctx.get_ty(root_expr.id).unwrap();
@@ -131,13 +137,13 @@ pub mod runner {
     #[derive(Debug, Error)]
     enum WasmerError {
         #[error(transparent)]
-        CompileError(#[from] wasmer::CompileError),
+        Compile(#[from] wasmer::CompileError),
         #[error(transparent)]
-        InstantiationError(#[from] wasmer::InstantiationError),
+        Instantiation(#[from] Box<wasmer::InstantiationError>),
         #[error(transparent)]
-        ExportError(#[from] wasmer::ExportError),
+        Export(#[from] wasmer::ExportError),
         #[error(transparent)]
-        RuntimeError(#[from] wasmer::RuntimeError),
+        Runtime(#[from] wasmer::RuntimeError),
     }
 
     #[derive(Debug, Error)]
@@ -156,7 +162,8 @@ pub mod runner {
     fn run_compiled_program(wasm: &[u8]) -> Result<wasmer::Value, WasmerError> {
         let mut store = Store::new(Singlepass::default());
         let module = Module::new(&store, wasm)?;
-        let instance = Instance::new(&mut store, &module, &imports! {})?;
+        let imports = imports! {};
+        let instance = Instance::new(&mut store, &module, &imports).map_err(Box::new)?;
 
         let eval = instance.exports.get_function(WASM_EVAL_FUNC)?;
         let result = eval.call(&mut store, &[])?;
