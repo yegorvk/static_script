@@ -1,0 +1,27 @@
+[package]
+name = "static_script"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+runtime = ["dep:wasmer", "dep:wasmer-compiler-singlepass"]
+
+[dependencies]
+derive_more = { version = "1.0.0", features = ["display"] }
+thiserror = "1.0.66"
+anyhow = "1.0.92"
+fxhash = "0.2.1"
+bumpalo = "3.16.0"
+elsa = { git = "https://github.com/Manishearth/elsa.git", features = ["indexmap"] }
+rpds = "1.1.0"
+lalrpop-util = { version = "0.22.0", features = ["lexer", "unicode"] }
+walrus = "0.22.0"
+wasmer = { version = "5.0.0", optional = true }
+wasmer-compiler-singlepass = { version = "5.0.0", optional = true }
+
+[dev-dependencies]
+wasmer = "5.0.0"
+wasmer-compiler-singlepass = "5.0.0"
+
+[build-dependencies]
+lalrpop = "0.22.0"

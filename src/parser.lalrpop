@@ -1,0 +1,89 @@
+use std::str::FromStr;
+use crate::Span;
+use crate::symbol::Symbol;
+use crate::ast::{Expr, ExprKind, Ident, Lit, LitKind, BinOp, BinOpKind, UnOp, UnOpKind};
+
+grammar;
+
+pub Expr = SpannedExpr<AddSubExpr>;
+
+SpannedExpr<Kind>: Expr = {
+    <start: @L> <kind: Kind> <end: @R> => Expr::new(kind, Span::new(start, end))
+}
+
+AddSubExpr: ExprKind = {
+    MulDivModExpr,
+    <left: SpannedExpr<AddSubExpr>> <op: BinOp<BinOpAddSub>> <right: SpannedExpr<MulDivModExpr>> => {
+        ExprKind::Binary(op, Box::new(left), Box::new(right))
+    }
+}
+
+MulDivModExpr: ExprKind = {
+    ExpExpr,
+    <left: SpannedExpr<MulDivModExpr>> <op: BinOp<BinOpMulDivMod>> <right: SpannedExpr<ExpExpr>> => {
+        ExprKind::Binary(op, Box::new(left), Box::new(right))
+    }
+}
+
+ExpExpr: ExprKind = {
+    UnaryExpr,
+    <left: SpannedExpr<UnaryExpr>> <op: BinOp<BinOpExp>> <right: SpannedExpr<ExpExpr>> => {
+        ExprKind::Binary(op, Box::new(left), Box::new(right))
+    }
+}
+
+UnaryExpr: ExprKind = {
+    AtomicExpr,
+    <op: UnOp> <expr: SpannedExpr<UnaryExpr>> => ExprKind::Unary(op, Box::new(expr)),
+}
+
+AtomicExpr: ExprKind = {
+    <lit: Lit> => ExprKind::Lit(lit),
+    <ident: Ident> => ExprKind::Ident(ident),
+    "(" <expr: Expr> ")" => ExprKind::Paren(Box::new(expr)),
+}
+
+Ident: Ident = {
+    <start: @L> <s: r"[a-zA-Z_][a-zA-Z0-9_]*"> <end: @R> => {
+        Ident { name: Symbol::from_str(s), span: Span::new(start, end) }
+    }
+}
+
+Lit: Lit = {
+    <start: @L> <kind: LitKind> <end: @R> => {
+        Lit { kind, span: Span::new(start, end)  }
+    }
+}
+
+LitKind: LitKind = {
+    <s: r"(([0-9]+\.[0-9]*)|([0-9]*\.[0-9]+))([eE][+-]?[0-9]+)?"> => LitKind::F32(f32::from_str(s).unwrap()),
+    <s: r"[0-9]+"> => LitKind::I32(i32::from_str(s).unwrap()),
+}
+
+BinOp<Kind>: BinOp = {
+    <start: @L> <kind: Kind> <end: @R> => BinOp { kind, span: Span::new(start, end) }
+}
+
+BinOpAddSub: BinOpKind = {
+    "+" => BinOpKind::Add,
+    "-" => BinOpKind::Sub,
+}
+
+BinOpMulDivMod: BinOpKind = {
+    "*" => BinOpKind::Mul,
+    "/" => BinOpKind::Div,
+    "%" => BinOpKind::Mod,
+}
+
+BinOpExp: BinOpKind = {
+    "^" => BinOpKind::Exp,
+}
+
+UnOp: UnOp = {
+    <start: @L> <kind: UnOpKind> <end: @R> => UnOp { kind, span: Span::new(start, end) }
+}
+
+UnOpKind: UnOpKind = {
+    "+" => UnOpKind::Plus,
+    "-" => UnOpKind::Neg
+}
