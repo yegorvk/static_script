@@ -8,7 +8,7 @@ mod symbol;
 
 use crate::generator::generate_wasm;
 use crate::parser::ExprParser;
-use crate::resolver::{ResolveError, ResolverBuilder, Type};
+use crate::resolver::{Def, ResolveError, ResolverBuilder, Var};
 use crate::symbol::Symbol;
 pub use generator::WASM_EVAL_FUNC;
 use lalrpop_util::lalrpop_mod;
@@ -41,26 +41,9 @@ pub struct Param {
     pub ty: PlainType,
 }
 
-#[derive(Debug)]
-struct ProgramConfig {
-    params: Vec<Param>,
-    ret: PlainType,
-}
-
-impl ProgramConfig {
-    pub fn new(params: impl IntoIterator<Item = Param>, ret: PlainType) -> ProgramConfig {
-        ProgramConfig {
-            params: params.into_iter().collect(),
-            ret,
-        }
-    }
-
-    pub fn params(&self) -> &[Param] {
-        &self.params
-    }
-
-    pub fn ret(&self) -> PlainType {
-        self.ret
+impl Param {
+    pub fn new(name: impl Into<String>, ty: PlainType) -> Param {
+        Param { name: name.into(), ty }
     }
 }
 
@@ -87,12 +70,10 @@ impl From<ResolveError> for CompileError {
 
 pub fn compile_program(
     src: &str,
-    params: impl IntoIterator<Item = Param>,
+    params: &[Param],
     target: CompileTarget,
 ) -> Result<Vec<u8>, CompileError> {
     session::reset_session();
-
-    let params: Vec<Param> = params.into_iter().collect();
 
     let root_expr = ExprParser::new()
         .parse(src)
@@ -106,21 +87,19 @@ pub fn compile_program(
         )
         .resolve(&root_expr)?;
 
-    let ret_ty = ctx.get_ty(root_expr.id).unwrap();
-
-    let plain_ret_ty = match ret_ty {
-        Type::I32 => PlainType::I32,
-        Type::F32 => PlainType::F32,
-        _ => {
-            let err = format!("Error: `{ret_ty}` is not a valid program return type.");
-            return Err(CompileError(err));
-        }
-    };
-
-    let config = ProgramConfig::new(params, plain_ret_ty);
+    let params: Vec<Var> = params.iter()
+        .map(|param| ctx.toplevel_scope().get(Symbol::from_str(&param.name)).unwrap())
+        .map(|def| match def {
+            Def::Var(var) => var
+        })
+        .collect();
 
     let result = match target {
-        CompileTarget::Wasm => generate_wasm(&root_expr, &ctx, &config),
+        CompileTarget::Wasm => {
+            generate_wasm(&root_expr, &ctx, &params).map_err(|e| {
+                CompileError(e.to_string())
+            })?
+        }
     };
 
     Ok(result)
@@ -128,8 +107,7 @@ pub fn compile_program(
 
 #[cfg(feature = "runtime")]
 pub mod runner {
-    use crate::{compile_program, CompileError, CompileTarget, WASM_EVAL_FUNC};
-    use std::iter;
+    use crate::{compile_program, CompileError, CompileTarget, Param, WASM_EVAL_FUNC};
     use thiserror::Error;
     use wasmer::{imports, Instance, Module, Store};
     use wasmer_compiler_singlepass::Singlepass;
@@ -149,24 +127,31 @@ pub mod runner {
     #[derive(Debug, Error)]
     pub enum RunProgramError {
         #[error(transparent)]
-        CompileError(#[from] CompileError),
+        BuildModuleError(#[from] CompileError),
         #[error(transparent)]
         RunError(#[from] WasmerError),
     }
 
-    pub fn run_program(src: &str) -> Result<wasmer::Value, RunProgramError> {
-        let wasm = compile_program(src, iter::empty(), CompileTarget::Wasm)?;
-        Ok(run_compiled_program(&wasm)?)
+    pub fn run_program(
+        src: &str,
+        params: &[Param],
+        args: &[wasmer::Value],
+    ) -> Result<wasmer::Value, RunProgramError> {
+        let wasm = compile_program(src, params, CompileTarget::Wasm)?;
+        Ok(run_compiled_program(&wasm, args)?)
     }
 
-    fn run_compiled_program(wasm: &[u8]) -> Result<wasmer::Value, WasmerError> {
+    fn run_compiled_program(
+        wasm: &[u8],
+        args: &[wasmer::Value],
+    ) -> Result<wasmer::Value, WasmerError> {
         let mut store = Store::new(Singlepass::default());
         let module = Module::new(&store, wasm)?;
         let imports = imports! {};
         let instance = Instance::new(&mut store, &module, &imports).map_err(Box::new)?;
 
         let eval = instance.exports.get_function(WASM_EVAL_FUNC)?;
-        let result = eval.call(&mut store, &[])?;
+        let result = eval.call(&mut store, args)?;
 
         Ok(IntoIterator::into_iter(result).next().unwrap())
     }

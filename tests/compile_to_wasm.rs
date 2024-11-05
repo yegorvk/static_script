@@ -1,22 +1,17 @@
-use static_script::{compile_program, CompileTarget, PlainType, WASM_EVAL_FUNC};
-use std::iter;
-use wasmer::{imports, Instance, Module, Store, Type, Value};
-use wasmer_compiler_singlepass::Singlepass;
+use static_script::runner::run_program;
+use static_script::{Param, PlainType};
+use wasmer::{Type, Value};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-fn run_test(src: &str, ret_ty: PlainType, expected: Value) -> Result<()> {
-    let wasm = compile_program(src, iter::empty(), CompileTarget::Wasm)?;
-
-    let mut store = Store::new(Singlepass::default());
-    let module = Module::new(&store, &wasm)?;
-    let instance = Instance::new(&mut store, &module, &imports! {})?;
-
-    let eval = instance.exports.get_function(WASM_EVAL_FUNC)?;
-    let result = eval.call(&mut store, &[])?;
-
-    assert_eq!(result.len(), 1);
-    let result = IntoIterator::into_iter(result).next().unwrap();
+fn run_test(
+    src: &str,
+    params: &[Param],
+    ret_ty: PlainType,
+    args: &[Value],
+    expected: Value,
+) -> Result<()> {
+    let result = run_program(src, params, args)?;
 
     assert_eq!(
         result.ty(),
@@ -31,22 +26,40 @@ fn run_test(src: &str, ret_ty: PlainType, expected: Value) -> Result<()> {
 }
 
 macro_rules! tests {
-    ($($name:ident, $src:expr => ($ty:ident, $val:expr)),* $(,)?) => {
+    ($($name:ident, $( [$($params:tt)*], )? $src:literal => ($ty:ident, $val:expr)),* $(,)?) => {
         $(
             #[test]
+            #[allow(unused_mut)]
             fn $name() -> Result<()> {
                 let (ret_ty, expected) = tests!(@result $ty $val);
-                run_test($src, ret_ty, expected)
+                let (params, args) = tests!(@params $( $($params)* )*);
+                run_test($src, &params, ret_ty, &args, expected)
             }
         )*
     };
+    
+    (@params $($param_name:ident: $param_ty:ident = $arg:expr),* $(,)?) => {
+        {
+            let mut params: Vec<Param> = vec![];
+            let mut args: Vec<Value> = vec![];
+            
+            $(
+                params.push(Param::new(stringify!($param_name), tests!(@parse_type $param_ty)));
+                args.push(($arg as $param_ty).into());
+            )*
+            
+            (params, args)
+        }
+    };
+    
+    (@params) => { ([], []) };
 
     (@result $ty:ident $val:expr) => {
-        (tests!(@result_type $ty), Value::from($val as $ty))
+        (tests!(@parse_type $ty), Value::from($val as $ty))
     };
 
-    (@result_type i32) => { PlainType::I32 };
-    (@result_type f32) => { PlainType::F32 };
+    (@parse_type i32) => { PlainType::I32 };
+    (@parse_type f32) => { PlainType::F32 };
 }
 
 tests! {
@@ -76,4 +89,9 @@ tests! {
 
     precedence_1, "2 + 3 * 41 / 2" => (i32, 2 + ((3 * 41) / 2)),
     precedence_2, "2 + 3 * (41 / 2)" => (i32, 2 + (3 * (41 / 2))),
+    
+    param_1, [x: i32 = 11], "13 + 2 * x + 1" => (i32, 13 + 2 * 11 + 1),
+    param_2, [x: f32 = 11.5], "13.1 + 2.2 * x" => (f32, 13.1_f32 + 2.2_f32 * 11.5_f32),
+    param_3, [x: i32 = 11, y: i32 = -1], "x*y - 2*x + 3*y" => (i32, 11*(-1) - 2*11 + 3*(-1)),
+    param_4, [long_name_123: f32 = 1e9], "long_name_123*2.0" => (f32, 1e9_f32 * 2f32),
 }

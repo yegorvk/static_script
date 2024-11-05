@@ -60,7 +60,6 @@ pub struct Lit {
 pub enum LitKind {
     I32(i32),
     F32(f32),
-    Unit,
 }
 
 #[derive(Debug, Copy, Clone, Display)]

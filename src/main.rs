@@ -26,7 +26,7 @@ fn run_interactive() -> Result<()> {
         expr.clear();
         io::stdin().read_line(&mut expr)?;
 
-        match run_program(&expr) {
+        match run_program(&expr, &[], &[]) {
             Ok(val) => {
                 println!("Result: {val}.");
             }

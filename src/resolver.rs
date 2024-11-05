@@ -22,7 +22,7 @@ impl Display for ResolveError {
 
 impl Error for ResolveError {}
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Display)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Display)]
 pub enum Type {
     #[display("i32")]
     I32,
@@ -41,7 +41,7 @@ impl From<PlainType> for Type {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Var {
     id: NonZeroU32,
     ty: Type,
@@ -58,6 +58,10 @@ impl Var {
 
         Var { id, ty }
     }
+
+    pub fn ty(&self) -> Type {
+        self.ty
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -65,28 +69,69 @@ pub enum Def {
     Var(Var),
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct ScopeId(usize);
+
 #[derive(Debug, Default)]
-pub struct AstContext {
+struct Map {
     ty: FxHashMap<NodeId, Type>,
     def: FxHashMap<NodeId, Def>,
+    scope: FxHashMap<NodeId, ScopeId>,
 }
 
-impl AstContext {
-    fn new() -> AstContext {
-        Default::default()
+#[derive(Debug)]
+pub struct Context {
+    map: Map,
+    scopes: Vec<Scope>,
+}
+
+impl Context {
+    fn new() -> Context {
+        Context {
+            map: Default::default(),
+            scopes: vec![Scope::new()],
+        }
+    }
+
+    pub fn toplevel_scope(&self) -> &Scope {
+        &self.scopes[0]
+    }
+
+    pub fn toplevel_scope_mut(&mut self) -> &mut Scope {
+        &mut self.scopes[0]
+    }
+
+    fn current_scope_id(&self) -> ScopeId {
+        ScopeId(self.scopes.len() - 1)
+    }
+
+    fn current_scope(&self) -> &Scope {
+        &self.scopes[self.scopes.len() - 1]
+    }
+
+    fn current_scope_mut(&mut self) -> &mut Scope {
+        self.scopes.last_mut().unwrap()
     }
 
     pub fn get_ty(&self, node_id: NodeId) -> Option<Type> {
-        self.ty.get(&node_id).copied()
+        self.map.ty.get(&node_id).copied()
     }
 
     pub fn get_def(&self, node_id: NodeId) -> Option<Def> {
-        self.def.get(&node_id).copied()
+        self.map.def.get(&node_id).copied()
+    }
+
+    pub fn get_scope_id(&self, node_id: NodeId) -> Option<ScopeId> {
+        self.map.scope.get(&node_id).map(|scope| *scope)
+    }
+
+    pub fn get_scope(&self, scope_id: ScopeId) -> Option<&Scope> {
+        self.scopes.get(scope_id.0)
     }
 }
 
 #[derive(Debug, Clone, Default)]
-struct Scope {
+pub struct Scope {
     map: HashTrieMap<Symbol, Def>,
 }
 
@@ -99,7 +144,7 @@ impl Scope {
         parent.clone()
     }
 
-    fn get(&self, ident: Symbol) -> Option<Def> {
+    pub fn get(&self, ident: Symbol) -> Option<Def> {
         self.map.get(&ident).copied()
     }
 
@@ -129,7 +174,7 @@ impl ResolverBuilder {
 
     pub fn with_vars<I>(&mut self, iter: I) -> &mut ResolverBuilder
     where
-        I: IntoIterator<Item = (Symbol, Type)>,
+        I: IntoIterator<Item=(Symbol, Type)>,
     {
         for (name, ty) in iter {
             self.with_var(name, ty);
@@ -138,12 +183,12 @@ impl ResolverBuilder {
         self
     }
 
-    pub fn resolve(&self, ast: &Expr) -> Result<AstContext, ResolveError> {
+    pub fn resolve(&self, ast: &Expr) -> Result<Context, ResolveError> {
         let mut resolver = Resolver::new();
 
         for (name, ty) in &self.vars {
-            resolver
-                .current_scope_mut()
+            resolver.ctx
+                .toplevel_scope_mut()
                 .insert(*name, Def::Var(Var::new(*ty)));
         }
 
@@ -153,29 +198,17 @@ impl ResolverBuilder {
 
 #[derive(Debug)]
 struct Resolver {
-    ctx: AstContext,
-    scopes: Vec<Scope>,
+    ctx: Context,
 }
 
 impl Resolver {
     pub fn new() -> Resolver {
-        Resolver {
-            ctx: AstContext::new(),
-            scopes: vec![Scope::new()],
-        }
+        Resolver { ctx: Context::new() }
     }
 
-    pub fn resolve(mut self, expr: &Expr) -> Result<AstContext, ResolveError> {
+    pub fn resolve(mut self, expr: &Expr) -> Result<Context, ResolveError> {
         expr.visit(&mut self)?;
         Ok(self.ctx)
-    }
-
-    fn current_scope(&self) -> &Scope {
-        &self.scopes[self.scopes.len() - 1]
-    }
-
-    fn current_scope_mut(&mut self) -> &mut Scope {
-        self.scopes.last_mut().unwrap()
     }
 }
 
@@ -189,13 +222,15 @@ impl Visitor for Resolver {
     type Result = Result<(), ResolveError>;
 
     fn visit_expr(&mut self, expr: &Expr) -> Self::Result {
+        self.ctx.map.scope.insert(expr.id, self.ctx.current_scope_id());
+
         match &expr.kind {
             ExprKind::Binary(op, left, right) => {
                 self.visit_expr(left)?;
                 self.visit_expr(right)?;
 
-                let left_ty = self.ctx.ty[&left.id];
-                let right_ty = self.ctx.ty[&right.id];
+                let left_ty = self.ctx.map.ty[&left.id];
+                let right_ty = self.ctx.map.ty[&right.id];
 
                 if left_ty != right_ty || !has_binop_defined(op.kind, left_ty) {
                     let diagnostic = format!(
@@ -206,11 +241,11 @@ impl Visitor for Resolver {
                     return Err(ResolveError(diagnostic));
                 }
 
-                self.ctx.ty.insert(expr.id, left_ty);
+                self.ctx.map.ty.insert(expr.id, left_ty);
             }
             ExprKind::Unary(op, term) => {
                 self.visit_expr(term)?;
-                let ty = self.ctx.ty[&term.id];
+                let ty = self.ctx.map.ty[&term.id];
 
                 if !has_unop_defined(op.kind, ty) {
                     let diagnostic = format!(
@@ -221,22 +256,22 @@ impl Visitor for Resolver {
                     return Err(ResolveError(diagnostic));
                 }
 
-                self.ctx.ty.insert(expr.id, ty);
+                self.ctx.map.ty.insert(expr.id, ty);
             }
             ExprKind::Paren(nested) => {
                 self.visit_expr(nested)?;
-                self.ctx.ty.insert(expr.id, self.ctx.ty[&nested.id]);
+                self.ctx.map.ty.insert(expr.id, self.ctx.map.ty[&nested.id]);
             }
             ExprKind::Ident(ident) => {
-                let def = self.current_scope().get(ident.name).ok_or_else(|| {
+                let def = self.ctx.current_scope().get(ident.name).ok_or_else(|| {
                     let diagnostic = format!("Error: `{ident}` is not defined.");
                     ResolveError(diagnostic)
                 })?;
 
                 match def {
                     Def::Var(var) => {
-                        self.ctx.ty.insert(expr.id, var.ty);
-                        self.ctx.def.insert(expr.id, Def::Var(var));
+                        self.ctx.map.ty.insert(expr.id, var.ty);
+                        self.ctx.map.def.insert(expr.id, Def::Var(var));
                     }
                 }
             }
@@ -244,10 +279,9 @@ impl Visitor for Resolver {
                 let ty = match lit.kind {
                     LitKind::I32(_) => Type::I32,
                     LitKind::F32(_) => Type::F32,
-                    LitKind::Unit => Type::Unit,
                 };
 
-                self.ctx.ty.insert(expr.id, ty);
+                self.ctx.map.ty.insert(expr.id, ty);
             }
         };
 

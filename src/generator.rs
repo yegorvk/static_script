@@ -1,52 +1,77 @@
 use crate::ast::visitor::{Visit, Visitor};
 use crate::ast::{BinOpKind, Expr, ExprKind, LitKind, UnOpKind};
-use crate::resolver::{AstContext, Type};
-use crate::{PlainType, ProgramConfig};
+use crate::resolver::{Context, Def, Type, Var};
+use fxhash::FxHashMap;
+use std::iter;
+use thiserror::Error;
 use walrus::ir::{BinaryOp, UnaryOp};
 use walrus::{FunctionBuilder, InstrSeqBuilder, LocalId, Module, ModuleConfig, ValType};
 
 pub const WASM_EVAL_FUNC: &str = "eval";
 
-pub fn generate_wasm(ast: &Expr, ctx: &AstContext, config: &ProgramConfig) -> Vec<u8> {
+#[derive(Debug, Error)]
+pub enum WasmGenError {
+    #[error("`{0}` cannot be used as a program argument type")]
+    InvalidParamType(Type),
+    #[error("`{0}` cannot be used as a program return type")]
+    InvalidReturnType(Type),
+}
+
+pub fn generate_wasm(
+    root_expr: &Expr,
+    ctx: &Context,
+    params: &[Var],
+) -> Result<Vec<u8>, WasmGenError> {
     let mut module = Module::with_config(ModuleConfig::new());
 
-    let params: Vec<ValType> = config
-        .params()
-        .iter()
-        .map(|var| match var.ty {
-            PlainType::I32 => ValType::I32,
-            PlainType::F32 => ValType::F32,
-        })
-        .collect();
+    let args: Vec<LocalId> = params.iter()
+        .map(|param| {
+            let ty = map_type(param.ty()).ok_or_else(|| {
+                WasmGenError::InvalidParamType(param.ty())
+            })?;
 
-    let result = match config.ret() {
-        PlainType::I32 => ValType::I32,
-        PlainType::F32 => ValType::F32,
+            Ok(module.locals.add(ty))
+        })
+        .collect::<Result<_, _>>()?;
+
+    let result = {
+        let ty = ctx.get_ty(root_expr.id).unwrap();
+
+        map_type(ty).ok_or_else(|| {
+            WasmGenError::InvalidReturnType(ty)
+        })?
     };
 
-    let param_locals: Vec<LocalId> = params
-        .iter()
-        .map(|param| module.locals.add(*param))
+    let param_types: Vec<ValType> = args.iter()
+        .map(|local| module.locals.get(*local).ty())
         .collect();
 
-    let mut eval = FunctionBuilder::new(&mut module.types, &params, &[result]);
+    let mut eval = FunctionBuilder::new(
+        &mut module.types,
+        &param_types,
+        &[result],
+    );
 
-    ast.visit(&mut Generator {
-        ctx,
-        instrs: eval.func_body(),
-    });
+    let mut locals: FxHashMap<Var, LocalId> = iter::zip(
+        params.iter().copied(),
+        args.iter().copied(),
+    ).collect();
 
-    let eval = eval.finish(param_locals, &mut module.funcs);
+    root_expr.visit(&mut Generator { ctx, locals: &mut locals, instrs: eval.func_body() });
+
+    let eval = eval.finish(args, &mut module.funcs);
+
     module.exports.add(WASM_EVAL_FUNC, eval);
-    module.emit_wasm()
+    Ok(module.emit_wasm())
 }
 
-struct Generator<'ctx, 'func> {
-    ctx: &'ctx AstContext,
-    instrs: InstrSeqBuilder<'func>,
+struct Generator<'a> {
+    ctx: &'a Context,
+    locals: &'a mut FxHashMap<Var, LocalId>,
+    instrs: InstrSeqBuilder<'a>,
 }
 
-impl Visitor for Generator<'_, '_> {
+impl Visitor for Generator<'_> {
     type Result = ();
 
     fn visit_expr(&mut self, expr: &Expr) -> Self::Result {
@@ -91,7 +116,7 @@ impl Visitor for Generator<'_, '_> {
                     (BinOpKind::Exp, Type::F32) => {
                         todo!("implement floating-point exponentiation");
                     }
-                    _ => unreachable!(),
+                    _ => unreachable!("logic error"),
                 }
             }
             ExprKind::Unary(op, term) => match (op.kind, out_ty) {
@@ -107,13 +132,20 @@ impl Visitor for Generator<'_, '_> {
                     self.visit_expr(term);
                     self.instrs.unop(UnaryOp::F32Neg);
                 }
-                _ => unreachable!(),
+                _ => unreachable!("logic error"),
             },
             ExprKind::Paren(nested) => {
                 nested.visit(self);
             }
-            ExprKind::Ident(_ident) => {
-                todo!("implement variables");
+            ExprKind::Ident(_) => {
+                let def = self.ctx.get_def(expr.id).unwrap();
+
+                match def {
+                    Def::Var(var) => {
+                        let local = self.locals[&var];
+                        self.instrs.local_get(local);
+                    }
+                }
             }
             ExprKind::Lit(lit) => match lit.kind {
                 LitKind::I32(val) => {
@@ -122,8 +154,15 @@ impl Visitor for Generator<'_, '_> {
                 LitKind::F32(val) => {
                     self.instrs.f32_const(val);
                 }
-                LitKind::Unit => {}
             },
         }
+    }
+}
+
+fn map_type(ty: Type) -> Option<ValType> {
+    match ty {
+        Type::I32 => Some(ValType::I32),
+        Type::F32 => Some(ValType::F32),
+        Type::Unit => None,
     }
 }
