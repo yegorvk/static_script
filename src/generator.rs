@@ -36,10 +36,7 @@ pub fn generate_wasm(
 
     let result = {
         let ty = ctx.get_ty(root_expr.id).unwrap();
-
-        map_type(ty).ok_or_else(|| {
-            WasmGenError::InvalidReturnType(ty)
-        })?
+        map_type(ty).ok_or(WasmGenError::InvalidReturnType(ty))?
     };
 
     let param_types: Vec<ValType> = args.iter()

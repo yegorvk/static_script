@@ -122,7 +122,7 @@ impl Context {
     }
 
     pub fn get_scope_id(&self, node_id: NodeId) -> Option<ScopeId> {
-        self.map.scope.get(&node_id).map(|scope| *scope)
+        self.map.scope.get(&node_id).copied()
     }
 
     pub fn get_scope(&self, scope_id: ScopeId) -> Option<&Scope> {
