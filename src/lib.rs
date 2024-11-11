@@ -1,5 +1,3 @@
-#![allow(private_interfaces)]
-
 mod ast;
 mod generator;
 mod resolver;
@@ -124,6 +122,7 @@ pub mod runner {
         Runtime(#[from] wasmer::RuntimeError),
     }
 
+    #[allow(private_interfaces)]
     #[derive(Debug, Error)]
     pub enum RunProgramError {
         #[error(transparent)]

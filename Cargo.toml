@@ -2,13 +2,18 @@
 name = "static_script"
 version = "0.1.0"
 edition = "2021"
+authors = ["Yegor Vaskonyan <yegor.vaskonyan@gmail.com>"]
+license = "MIT OR APACHE-2.0"
+description = "A simple statically-typed compiled programming language"
+repository = "https://github.com/yegorvk/static_script"
+exclude = [".idea"]
 
 [features]
 runtime = ["dep:wasmer", "dep:wasmer-compiler-singlepass"]
 
 [dependencies]
 derive_more = { version = "1.0.0", features = ["display"] }
-thiserror = "1.0.66"
+thiserror = "2.0.3"
 anyhow = "1.0.92"
 fxhash = "0.2.1"
 bumpalo = "3.16.0"
