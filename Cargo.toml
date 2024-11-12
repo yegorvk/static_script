@@ -17,7 +17,7 @@ thiserror = "2.0.3"
 anyhow = "1.0.92"
 fxhash = "0.2.1"
 bumpalo = "3.16.0"
-elsa = { git = "https://github.com/Manishearth/elsa.git", features = ["indexmap"] }
+indexmap = "2.6.0"
 rpds = "1.1.0"
 lalrpop-util = { version = "0.22.0", features = ["lexer", "unicode"] }
 walrus = "0.22.0"

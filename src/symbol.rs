@@ -1,9 +1,9 @@
-use bumpalo::Bump;
-use elsa::FrozenIndexSet;
-use std::fmt::{Display, Formatter};
-
 use crate::session::with_session;
 use crate::session_scoped;
+use bumpalo::Bump;
+use indexmap::IndexSet;
+use std::cell::RefCell;
+use std::fmt::{Display, Formatter};
 
 session_scoped! {
     static INTERNER: Interner = Interner::new();
@@ -40,21 +40,21 @@ impl Display for Symbol {
     }
 }
 
+#[derive(Debug, Default)]
 struct Interner {
     bump: Bump,
-    lookup: FrozenIndexSet<&'static str>,
+    lookup: RefCell<IndexSet<&'static str>>,
 }
 
 impl Interner {
     fn new() -> Self {
-        Self {
-            bump: Bump::new(),
-            lookup: FrozenIndexSet::new(),
-        }
+        Default::default()
     }
 
     fn intern(&self, str: &str) -> Symbol {
-        if let Some(index) = self.lookup.get_index_of(str) {
+        let mut lookup = self.lookup.borrow_mut();
+
+        if let Some(index) = lookup.get_index_of(str) {
             return Symbol::new(index as SymbolIndex);
         }
 
@@ -66,13 +66,13 @@ impl Interner {
         let str: &'static str = unsafe { &*(str as *const str) };
 
         // Register the newly created string with the interner.
-        let (index, _) = self.lookup.insert_full(str);
+        let (index, _) = lookup.insert_full(str);
 
         Symbol::new(index as SymbolIndex)
     }
 
     fn get(&self, symbol: Symbol) -> Option<&str> {
-        self.lookup.get_index(symbol.index as usize)
+        self.lookup.borrow().get_index(symbol.index as usize).copied()
     }
 }
 
